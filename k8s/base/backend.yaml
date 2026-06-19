@@ -9,7 +9,7 @@ metadata:
   labels:
     app: backend
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: backend
@@ -26,7 +26,7 @@ spec:
       initContainers:
         - name: run-migrations
           image: yourdockerhub/ecommerce-backend:latest
-          command: ["python", "manage.py", "migrate"]
+          command: ["/bin/sh", "-c", "python manage.py migrate users && python manage.py migrate"]
           envFrom:
             - configMapRef:
                 name: ecommerce-config
