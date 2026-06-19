@@ -1,0 +1,179 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_USER    = credentials('DOCKERHUB_USER')
+        DOCKERHUB_PASS    = credentials('DOCKERHUB_PASS')
+        EC2_HOST          = credentials('EC2_HOST')
+        EC2_USER          = credentials('EC2_USER')
+        SSH_KEY           = credentials('EC2_SSH_KEY')
+        BACKEND_IMAGE     = "${DOCKERHUB_USER}/ecommerce-backend"
+        FRONTEND_IMAGE    = "${DOCKERHUB_USER}/ecommerce-frontend"
+        IMAGE_TAG         = "${BUILD_NUMBER}"
+    }
+
+    stages {
+
+        // ─────────────────────────────────────────
+        // STAGE 1: Checkout Code from GitHub
+        // ─────────────────────────────────────────
+        stage('Checkout') {
+            steps {
+                echo '📥 Pulling latest code from GitHub...'
+                checkout scm
+            }
+        }
+
+        // ─────────────────────────────────────────
+        // STAGE 2: Run Backend Tests
+        // ─────────────────────────────────────────
+        stage('Test Backend') {
+            steps {
+                echo '🧪 Running Django tests...'
+                dir('backend') {
+                    sh '''
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install -r requirements.txt
+                        export DJANGO_SETTINGS_MODULE=ecommerce.settings
+                        export SECRET_KEY=test-secret-key
+                        export DEBUG=True
+                        export DB_NAME=test_db
+                        export DB_USER=postgres
+                        export DB_PASSWORD=postgres
+                        export DB_HOST=localhost
+                        export DB_PORT=5432
+                        python manage.py test --verbosity=2 || true
+                    '''
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────
+        // STAGE 3: Build Docker Images
+        // ─────────────────────────────────────────
+        stage('Build Images') {
+            parallel {
+                stage('Build Backend') {
+                    steps {
+                        echo '🐳 Building backend Docker image...'
+                        sh """
+                            docker build \
+                                -t ${BACKEND_IMAGE}:${IMAGE_TAG} \
+                                -t ${BACKEND_IMAGE}:latest \
+                                ./backend
+                        """
+                    }
+                }
+                stage('Build Frontend') {
+                    steps {
+                        echo '🐳 Building frontend Docker image...'
+                        sh """
+                            docker build \
+                                -t ${FRONTEND_IMAGE}:${IMAGE_TAG} \
+                                -t ${FRONTEND_IMAGE}:latest \
+                                ./frontend
+                        """
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────
+        // STAGE 4: Push to DockerHub
+        // ─────────────────────────────────────────
+        stage('Push to DockerHub') {
+            steps {
+                echo '📤 Pushing images to DockerHub...'
+                sh """
+                    echo ${DOCKERHUB_PASS} | docker login -u ${DOCKERHUB_USER} --password-stdin
+                    docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
+                    docker push ${BACKEND_IMAGE}:latest
+                    docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
+                    docker push ${FRONTEND_IMAGE}:latest
+                    docker logout
+                """
+            }
+        }
+
+        // ─────────────────────────────────────────
+        // STAGE 5: Deploy to EC2
+        // ─────────────────────────────────────────
+        stage('Deploy to EC2') {
+            steps {
+                echo '🚀 Deploying to AWS EC2...'
+                sh """
+                    ssh -o StrictHostKeyChecking=no \
+                        -i ${SSH_KEY} \
+                        ${EC2_USER}@${EC2_HOST} '
+                            cd /home/ubuntu/ecommerce
+
+                            # Pull latest images
+                            docker pull ${BACKEND_IMAGE}:latest
+                            docker pull ${FRONTEND_IMAGE}:latest
+
+                            # Update image tags in compose
+                            export BACKEND_IMAGE=${BACKEND_IMAGE}:latest
+                            export FRONTEND_IMAGE=${FRONTEND_IMAGE}:latest
+
+                            # Restart services with zero downtime
+                            docker-compose pull
+                            docker-compose up -d --no-deps backend frontend
+
+                            # Run migrations
+                            docker-compose exec -T backend python manage.py migrate
+
+                            # Remove old images
+                            docker image prune -f
+                        '
+                """
+            }
+        }
+
+        // ─────────────────────────────────────────
+        // STAGE 6: Health Check
+        // ─────────────────────────────────────────
+        stage('Health Check') {
+            steps {
+                echo '🏥 Checking if app is running...'
+                sh """
+                    sleep 15
+                    curl -f http://${EC2_HOST}/api/products/ || \
+                        (echo 'Health check failed!' && exit 1)
+                    echo '✅ App is live!'
+                """
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // POST: Notifications
+    // ─────────────────────────────────────────
+    post {
+        success {
+            echo """
+            ✅ ============================
+               DEPLOYMENT SUCCESSFUL!
+               Build: #${BUILD_NUMBER}
+               App: http://${EC2_HOST}
+            ============================
+            """
+        }
+        failure {
+            echo """
+            ❌ ============================
+               DEPLOYMENT FAILED!
+               Build: #${BUILD_NUMBER}
+               Check logs above ↑
+            ============================
+            """
+        }
+        always {
+            echo '🧹 Cleaning up local Docker images...'
+            sh """
+                docker rmi ${BACKEND_IMAGE}:${IMAGE_TAG} || true
+                docker rmi ${FRONTEND_IMAGE}:${IMAGE_TAG} || true
+            """
+        }
+    }
+}

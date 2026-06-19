@@ -1,0 +1,40 @@
+.orders-page { padding: 2rem 0; max-width: 800px; }
+
+.order-card { margin-bottom: 1.5rem; }
+
+.order-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--light);
+}
+
+.order-header h3 { font-size: 1rem; font-weight: 700; }
+.order-date { font-size: 0.8rem; color: var(--gray); }
+
+.status-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.order-total { font-weight: 700; font-size: 1.1rem; margin-top: 0.3rem; }
+
+.order-item-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.4rem 0;
+  font-size: 0.875rem;
+  color: var(--gray);
+  border-bottom: 1px dashed #f3f4f6;
+}
+
+.order-address {
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  color: var(--gray);
+}
