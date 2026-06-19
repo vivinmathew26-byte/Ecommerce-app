@@ -2,31 +2,25 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_USER    = credentials('DOCKERHUB_USER')
-        DOCKERHUB_PASS    = credentials('DOCKERHUB_PASS')
-        EC2_HOST          = credentials('EC2_HOST')
-        EC2_USER          = credentials('EC2_USER')
-        SSH_KEY           = credentials('EC2_SSH_KEY')
-        BACKEND_IMAGE     = "${DOCKERHUB_USER}/ecommerce-backend"
-        FRONTEND_IMAGE    = "${DOCKERHUB_USER}/ecommerce-frontend"
-        IMAGE_TAG         = "${BUILD_NUMBER}"
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+        GITHUB_CREDENTIALS    = credentials('github_vivinmathew26-byte_credentials')
+        DOCKERHUB_USER        = "vivinsdevops"
+        BACKEND_IMAGE         = "${DOCKERHUB_USER}/ecommerce-backend"
+        FRONTEND_IMAGE        = "${DOCKERHUB_USER}/ecommerce-frontend"
+        IMAGE_TAG             = "${BUILD_NUMBER}"
     }
 
     stages {
 
-        // ─────────────────────────────────────────
-        // STAGE 1: Checkout Code from GitHub
-        // ─────────────────────────────────────────
         stage('Checkout') {
             steps {
-                echo '📥 Pulling latest code from GitHub...'
-                checkout scm
+                echo '📥 Pulling code from GitHub...'
+                git credentialsId: 'github_vivinmathew26-byte_credentials',
+                    url: 'https://github.com/vivinmathew26-byte/Ecommerce-app',
+                    branch: 'main'
             }
         }
 
-        // ─────────────────────────────────────────
-        // STAGE 2: Run Backend Tests
-        // ─────────────────────────────────────────
         stage('Test Backend') {
             steps {
                 echo '🧪 Running Django tests...'
@@ -34,8 +28,7 @@ pipeline {
                     sh '''
                         python3 -m venv venv
                         . venv/bin/activate
-                        pip install -r requirements.txt
-                        export DJANGO_SETTINGS_MODULE=ecommerce.settings
+                        pip install -r requirements.txt --quiet
                         export SECRET_KEY=test-secret-key
                         export DEBUG=True
                         export DB_NAME=test_db
@@ -43,20 +36,17 @@ pipeline {
                         export DB_PASSWORD=postgres
                         export DB_HOST=localhost
                         export DB_PORT=5432
-                        python manage.py test --verbosity=2 || true
+                        python manage.py test --verbosity=1 || true
                     '''
                 }
             }
         }
 
-        // ─────────────────────────────────────────
-        // STAGE 3: Build Docker Images
-        // ─────────────────────────────────────────
         stage('Build Images') {
             parallel {
                 stage('Build Backend') {
                     steps {
-                        echo '🐳 Building backend Docker image...'
+                        echo '🐳 Building backend image...'
                         sh """
                             docker build \
                                 -t ${BACKEND_IMAGE}:${IMAGE_TAG} \
@@ -67,7 +57,7 @@ pipeline {
                 }
                 stage('Build Frontend') {
                     steps {
-                        echo '🐳 Building frontend Docker image...'
+                        echo '🐳 Building frontend image...'
                         sh """
                             docker build \
                                 -t ${FRONTEND_IMAGE}:${IMAGE_TAG} \
@@ -79,14 +69,12 @@ pipeline {
             }
         }
 
-        // ─────────────────────────────────────────
-        // STAGE 4: Push to DockerHub
-        // ─────────────────────────────────────────
         stage('Push to DockerHub') {
             steps {
-                echo '📤 Pushing images to DockerHub...'
+                echo '📤 Pushing to DockerHub...'
                 sh """
-                    echo ${DOCKERHUB_PASS} | docker login -u ${DOCKERHUB_USER} --password-stdin
+                    echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login \
+                        -u ${DOCKERHUB_CREDENTIALS_USR} --password-stdin
                     docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
                     docker push ${BACKEND_IMAGE}:latest
                     docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
@@ -96,80 +84,52 @@ pipeline {
             }
         }
 
-        // ─────────────────────────────────────────
-        // STAGE 5: Deploy to EC2
-        // ─────────────────────────────────────────
-        stage('Deploy to EC2') {
+        stage('Deploy to Kubernetes') {
             steps {
-                echo '🚀 Deploying to AWS EC2...'
+                echo '☸️ Deploying to Kubernetes...'
                 sh """
-                    ssh -o StrictHostKeyChecking=no \
-                        -i ${SSH_KEY} \
-                        ${EC2_USER}@${EC2_HOST} '
-                            cd /home/ubuntu/ecommerce
+                    # Update image in k8s manifests
+                    sed -i "s|yourdockerhub/ecommerce-backend:.*|${BACKEND_IMAGE}:${IMAGE_TAG}|g" k8s/base/backend.yaml
+                    sed -i "s|yourdockerhub/ecommerce-frontend:.*|${FRONTEND_IMAGE}:${IMAGE_TAG}|g" k8s/base/frontend.yaml
 
-                            # Pull latest images
-                            docker pull ${BACKEND_IMAGE}:latest
-                            docker pull ${FRONTEND_IMAGE}:latest
+                    # Apply manifests
+                    kubectl apply -f k8s/base/namespace.yaml
+                    kubectl apply -f k8s/base/configmap.yaml
+                    kubectl apply -f k8s/base/secrets.yaml
+                    kubectl apply -f k8s/base/postgres.yaml
+                    kubectl apply -f k8s/base/backend.yaml
+                    kubectl apply -f k8s/base/frontend.yaml
+                    kubectl apply -f k8s/base/ingress.yaml
 
-                            # Update image tags in compose
-                            export BACKEND_IMAGE=${BACKEND_IMAGE}:latest
-                            export FRONTEND_IMAGE=${FRONTEND_IMAGE}:latest
+                    # Wait for rollout
+                    kubectl rollout status deployment/backend -n ecommerce --timeout=120s
+                    kubectl rollout status deployment/frontend -n ecommerce --timeout=120s
 
-                            # Restart services with zero downtime
-                            docker-compose pull
-                            docker-compose up -d --no-deps backend frontend
-
-                            # Run migrations
-                            docker-compose exec -T backend python manage.py migrate
-
-                            # Remove old images
-                            docker image prune -f
-                        '
+                    kubectl get pods -n ecommerce
                 """
             }
         }
 
-        // ─────────────────────────────────────────
-        // STAGE 6: Health Check
-        // ─────────────────────────────────────────
         stage('Health Check') {
             steps {
-                echo '🏥 Checking if app is running...'
+                echo '🏥 Health check...'
                 sh """
                     sleep 15
-                    curl -f http://${EC2_HOST}/api/products/ || \
-                        (echo 'Health check failed!' && exit 1)
-                    echo '✅ App is live!'
+                    kubectl get pods -n ecommerce
+                    echo '✅ Deployment complete!'
                 """
             }
         }
     }
 
-    // ─────────────────────────────────────────
-    // POST: Notifications
-    // ─────────────────────────────────────────
     post {
         success {
-            echo """
-            ✅ ============================
-               DEPLOYMENT SUCCESSFUL!
-               Build: #${BUILD_NUMBER}
-               App: http://${EC2_HOST}
-            ============================
-            """
+            echo "✅ Build #${BUILD_NUMBER} deployed successfully!"
         }
         failure {
-            echo """
-            ❌ ============================
-               DEPLOYMENT FAILED!
-               Build: #${BUILD_NUMBER}
-               Check logs above ↑
-            ============================
-            """
+            echo "❌ Build #${BUILD_NUMBER} failed!"
         }
         always {
-            echo '🧹 Cleaning up local Docker images...'
             sh """
                 docker rmi ${BACKEND_IMAGE}:${IMAGE_TAG} || true
                 docker rmi ${FRONTEND_IMAGE}:${IMAGE_TAG} || true
