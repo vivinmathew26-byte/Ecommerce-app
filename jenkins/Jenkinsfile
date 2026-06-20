@@ -81,6 +81,7 @@ pipeline {
         echo '☸️ Deploying to Kubernetes...'
         sh '''
             export PATH=$PATH:/usr/local/bin
+            export KUBECONFIG=/var/lib/jenkins/.kube/config
 
             sed -i "s|yourdockerhub/ecommerce-backend:.*|vivinsdevops/ecommerce-backend:${IMAGE_TAG}|g" k8s/base/backend.yaml
             sed -i "s|yourdockerhub/ecommerce-frontend:.*|vivinsdevops/ecommerce-frontend:${IMAGE_TAG}|g" k8s/base/frontend.yaml
