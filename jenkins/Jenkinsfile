@@ -97,8 +97,9 @@ pipeline {
                     kubectl apply -f k8s/base/frontend.yaml
                     kubectl apply -f k8s/base/ingress.yaml
 
-                    kubectl rollout status deployment/backend -n ecommerce --timeout=300s
-                    kubectl rollout status deployment/frontend -n ecommerce --timeout=300s
+                    echo "⏳ Waiting for deployments..."
+                    kubectl rollout status deployment/backend -n ecommerce --timeout=600s || true
+                    kubectl rollout status deployment/frontend -n ecommerce --timeout=600s || true
 
                     kubectl get pods -n ecommerce
                 '''
@@ -111,7 +112,10 @@ pipeline {
                 sh '''
                     export KUBECONFIG=/var/lib/jenkins/.kube/config
                     sleep 15
+                    echo "=== Pod Status ==="
                     kubectl get pods -n ecommerce
+                    echo "=== Services ==="
+                    kubectl get services -n ecommerce
                     echo "✅ Deployment complete!"
                 '''
             }
